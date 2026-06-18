@@ -3,7 +3,8 @@
 <html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
 
 <title>Dota Zero</title>
-<script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a12; font-family: 'Segoe UI', Arial, sans-serif; }
@@ -214,6 +215,9 @@ body { display: flex; justify-content: center; align-items: center; }
   <button class="mp-btn back-btn" onclick="closeMpLobby()">CANCEL</button>
 </div>
 <script>
+firebase.initializeApp({apiKey:"AIzaSyD9eO_hbvPsFIf9QQ6cTGbY4J6bydEBQlc",authDomain:"dota-zero.firebaseapp.com",databaseURL:"https://dota-zero-default-rtdb.europe-west1.firebasedatabase.app",projectId:"dota-zero",storageBucket:"dota-zero.firebasestorage.app",messagingSenderId:"293951512923",appId:"1:293951512923:web:d358f17b72da01693d3a7e"});
+const fdb=firebase.database();
+
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
 canvas.width = 1280; canvas.height = 720;
@@ -504,8 +508,8 @@ let particles=[],bullets=[],floatingTexts=[];
 let screenShake=0,p1,p2;
 let aiShootCD=0,aiAbilityCD=0;
 
-let mpMode=false, mpIsHost=false, mpConn=null, mpSocket=null, mpPeerConn=null;
-let mpHostChar=null, mpGuestChar=null, mpGuestConnected=false;
+let mpMode=false, mpIsHost=false, mpConn=null, mpPeerConn=null;
+let mpHostChar=null, mpGuestChar=null, mpGuestConnected=false, mpRoomCode=null;
 const HERO_NAMES={sniper:'SNIPER',archer:'DROW RANGER',pa:'PHANTOM ASSASSIN',morphling:'MORPHLING',chrono:'VOID',sky:'SKYWRATH MAGE'};
 const MP_ICE=[{urls:'stun:stun.l.google.com:19302'},{urls:'stun:stun1.l.google.com:19302'},{urls:'stun:stun2.l.google.com:19302'},{urls:'stun:stun3.l.google.com:19302'},{urls:'stun:stun4.l.google.com:19302'}];
 
@@ -514,18 +518,20 @@ function mpSendData(data){ if(mpConn&&mpConn.readyState==='open') try{mpConn.sen
 function mpCleanup(){
   if(mpConn){try{mpConn.close();}catch(e){} mpConn=null;}
   if(mpPeerConn){try{mpPeerConn.close();}catch(e){} mpPeerConn=null;}
-  if(mpSocket){try{mpSocket.disconnect();}catch(e){} mpSocket=null;}
+  if(mpRoomCode){try{fdb.ref('rooms/'+mpRoomCode).remove();}catch(e){} mpRoomCode=null;}
   mpGuestConnected=false;
 }
 
 function showMpMenu(){ initAudio(); playSound('menuClick'); document.getElementById('mpMenu').style.display='flex'; }
 function closeMpMenu(){ playSound('menuClick'); document.getElementById('mpMenu').style.display='none'; }
 
-const MP_SERVER=(location.hostname==='localhost'||location.hostname==='127.0.0.1')
-  ?'http://localhost:3000'
-  :'https://dota-zero-signaling.onrender.com';
+function mpGenCode(){
+  const c='ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let r=''; for(let i=0;i<6;i++) r+=c[Math.floor(Math.random()*c.length)];
+  return r;
+}
 
-function mpCreateWebRTC(socket,isHost,cb){
+function mpCreateWebRTC(isHost,cb){
   let pc=new RTCPeerConnection({iceServers:MP_ICE});
   mpPeerConn=pc;
   if(isHost){
@@ -536,8 +542,7 @@ function mpCreateWebRTC(socket,isHost,cb){
     dc.onclose=function(){ mpGuestConnected=false; cb('disconnected'); };
   } else {
     pc.ondatachannel=function(e){
-      let dc=e.channel;
-      mpConn=dc;
+      let dc=e.channel; mpConn=dc;
       dc.onopen=function(){ mpGuestConnected=true; cb('connected'); };
       dc.onmessage=function(ev){ handleHostData(JSON.parse(ev.data)); };
       dc.onclose=function(){ mpGuestConnected=false; cb('disconnected'); };
@@ -546,7 +551,7 @@ function mpCreateWebRTC(socket,isHost,cb){
   pc.oniceconnectionstatechange=function(){
     let st=pc.iceConnectionState;
     if(st==='failed') cb('failed');
-    if(st==='disconnected') cb('disconnected');
+    if(st==='disconnected'&&mpGuestConnected) cb('disconnected');
   };
   return pc;
 }
@@ -556,64 +561,55 @@ function showCreateRoom(){
   document.getElementById('mpMenu').style.display='none';
   document.getElementById('createRoomPanel').style.display='flex';
   document.getElementById('createStatus').style.color='#ff0';
-  document.getElementById('createStatus').textContent='Connecting to server...';
+  document.getElementById('createStatus').textContent='Creating room...';
   document.getElementById('createLobby').style.display='none';
   document.getElementById('roomCodeDisplay').textContent='------';
   mpCleanup();
   mpIsHost=true; mpMode=true;
   let statusEl=document.getElementById('createStatus');
-  let socket=io(MP_SERVER,{transports:['websocket','polling'],timeout:10000,reconnection:true,reconnectionAttempts:3});
-  mpSocket=socket;
-  socket.on('connect',function(){
-    statusEl.textContent='Connected! Creating room...';
-    socket.emit('create-room',function(res){
-      if(res.error){ statusEl.style.color='#f44'; statusEl.innerHTML=res.error+' <button class="mp-btn back-btn" style="display:inline;font-size:11px;padding:4px 12px;" onclick="showCreateRoom()">RETRY</button>'; return; }
-      document.getElementById('roomCodeDisplay').textContent=res.code;
+  let code=mpGenCode();
+  mpRoomCode=code;
+  let roomRef=fdb.ref('rooms/'+code);
+  let pc=mpCreateWebRTC(true,function(evt){
+    if(evt==='connected'){
       statusEl.className='mp-ready';
-      statusEl.textContent='Share this code with your friend!';
-    });
-  });
-  socket.on('guest-joined',function(){
-    statusEl.textContent='Opponent joined! Establishing connection...';
-    let pc=mpCreateWebRTC(socket,true,function(evt){
-      if(evt==='connected'){
-        statusEl.className='mp-ready';
-        statusEl.textContent='Opponent connected!';
-        document.getElementById('createLobby').style.display='block';
-      } else if(evt==='failed'||evt==='disconnected'){
-        if(mpGuestConnected) return;
-        statusEl.style.color='#f44';
-        statusEl.innerHTML='P2P connection failed. <button class="mp-btn back-btn" style="display:inline;font-size:11px;padding:4px 12px;" onclick="showCreateRoom()">RETRY</button>';
-      }
-    });
-    pc.createOffer().then(function(offer){ return pc.setLocalDescription(offer); }).then(function(){
-      socket.emit('signal',{type:'offer',sdp:pc.localDescription.sdp});
-    }).catch(function(e){ statusEl.style.color='#f44'; statusEl.textContent='Error: '+e.message; });
-  });
-  socket.on('signal',function(data){
-    if(data.type==='answer'&&mpPeerConn){
-      mpPeerConn.setRemoteDescription({type:'answer',sdp:data.sdp}).catch(function(){});
-    }
-  });
-  socket.on('guest-disconnected',function(){
-    mpGuestConnected=false; mpConn=null;
-    document.getElementById('guestHeroPick').textContent='Disconnected';
-    document.getElementById('mpStartBtn').disabled=true;
-  });
-  socket.on('room-expired',function(){
-    statusEl.style.color='#f44';
-    statusEl.innerHTML='Room expired. <button class="mp-btn back-btn" style="display:inline;font-size:11px;padding:4px 12px;" onclick="showCreateRoom()">RETRY</button>';
-  });
-  socket.on('connect_error',function(){
-    statusEl.style.color='#f44';
-    statusEl.innerHTML='Cannot reach server. <button class="mp-btn back-btn" style="display:inline;font-size:11px;padding:4px 12px;" onclick="showCreateRoom()">RETRY</button>';
-  });
-  socket.on('disconnect',function(){
-    if(!mpGuestConnected){
+      statusEl.textContent='Opponent connected!';
+      document.getElementById('createLobby').style.display='block';
+    } else if(evt==='failed'||evt==='disconnected'){
+      if(mpGuestConnected) return;
       statusEl.style.color='#f44';
-      statusEl.innerHTML='Disconnected from server. <button class="mp-btn back-btn" style="display:inline;font-size:11px;padding:4px 12px;" onclick="showCreateRoom()">RETRY</button>';
+      statusEl.innerHTML='Connection failed. <button class="mp-btn back-btn" style="display:inline;font-size:11px;padding:4px 12px;" onclick="showCreateRoom()">RETRY</button>';
     }
   });
+  pc.onicecandidate=function(e){
+    if(e.candidate) return;
+    if(pc.localDescription){
+      roomRef.child('offer').set({sdp:pc.localDescription.sdp,type:pc.localDescription.type,ts:firebase.database.ServerValue.TIMESTAMP});
+    }
+  };
+  pc.createOffer().then(function(offer){
+    return pc.setLocalDescription(offer);
+  }).then(function(){
+    document.getElementById('roomCodeDisplay').textContent=code;
+    statusEl.className='mp-ready';
+    statusEl.textContent='Room ready! Share code with friend.';
+  }).catch(function(e){
+    statusEl.style.color='#f44';
+    statusEl.innerHTML='Error: '+e.message;
+  });
+  roomRef.child('answer').on('value',function(snap){
+    let data=snap.val();
+    if(data&&data.sdp&&mpPeerConn){
+      mpPeerConn.setRemoteDescription({type:data.type,sdp:data.sdp}).catch(function(){});
+    }
+  });
+  roomRef.child('guest').on('value',function(snap){
+    if(snap.val()){
+      statusEl.textContent='Opponent joined! Connecting...';
+    }
+  });
+  roomRef.child('guest').onDisconnect().remove();
+  roomRef.onDisconnect().remove();
 }
 
 function showJoinRoom(){
@@ -629,64 +625,46 @@ function joinRoom(){
   let code=document.getElementById('joinCodeInput').value.trim().toUpperCase();
   if(!code||code.length<3){ document.getElementById('joinStatus').style.color='#f44'; document.getElementById('joinStatus').textContent='Enter a valid code'; return; }
   document.getElementById('joinStatus').style.color='#ff0';
-  document.getElementById('joinStatus').textContent='Connecting to server...';
+  document.getElementById('joinStatus').textContent='Searching for room...';
   mpCleanup();
   mpIsHost=false; mpMode=true;
   let statusEl=document.getElementById('joinStatus');
-  let socket=io(MP_SERVER,{transports:['websocket','polling'],timeout:10000,reconnection:true,reconnectionAttempts:3});
-  mpSocket=socket;
-  socket.on('connect',function(){
-    statusEl.textContent='Connected! Joining room...';
-    socket.emit('join-room',code,function(res){
-      if(res.error){
-        statusEl.style.color='#f44';
-        statusEl.innerHTML=res.error+'. <button class="mp-btn back-btn" style="display:inline;font-size:11px;padding:4px 12px;" onclick="joinRoom()">RETRY</button>';
-        return;
-      }
-      statusEl.textContent='Joined! Establishing connection...';
-      mpCreateWebRTC(socket,false,function(evt){
-        if(evt==='connected'){
-          statusEl.className='mp-ready';
-          statusEl.textContent='Connected to host!';
-          document.getElementById('joinLobby').style.display='block';
-        } else if(evt==='failed'||evt==='disconnected'){
-          if(mpGuestConnected) return;
-          statusEl.style.color='#f44';
-          statusEl.innerHTML='P2P failed. <button class="mp-btn back-btn" style="display:inline;font-size:11px;padding:4px 12px;" onclick="joinRoom()">RETRY</button>';
-        }
-      });
-    });
-  });
-  socket.on('signal',function(data){
-    if(data.type==='offer'&&mpPeerConn){
-      mpPeerConn.setRemoteDescription({type:'offer',sdp:data.sdp}).then(function(){
-        return mpPeerConn.createAnswer();
-      }).then(function(answer){
-        return mpPeerConn.setLocalDescription(answer);
-      }).then(function(){
-        socket.emit('signal',{type:'answer',sdp:mpPeerConn.localDescription.sdp});
-      }).catch(function(e){ statusEl.style.color='#f44'; statusEl.textContent='Error: '+e.message; });
-    }
-  });
-  socket.on('host-disconnected',function(){
-    mpGuestConnected=false; mpConn=null;
-    statusEl.style.color='#f44';
-    statusEl.innerHTML='Host disconnected. <button class="mp-btn back-btn" style="display:inline;font-size:11px;padding:4px 12px;" onclick="joinRoom()">RETRY</button>';
-    document.getElementById('joinLobby').style.display='none';
-  });
-  socket.on('room-expired',function(){
-    statusEl.style.color='#f44';
-    statusEl.innerHTML='Room expired. <button class="mp-btn back-btn" style="display:inline;font-size:11px;padding:4px 12px;" onclick="joinRoom()">RETRY</button>';
-  });
-  socket.on('connect_error',function(){
-    statusEl.style.color='#f44';
-    statusEl.innerHTML='Cannot reach server. <button class="mp-btn back-btn" style="display:inline;font-size:11px;padding:4px 12px;" onclick="joinRoom()">RETRY</button>';
-  });
-  socket.on('disconnect',function(){
-    if(!mpGuestConnected){
+  let roomRef=fdb.ref('rooms/'+code);
+  roomRef.child('offer').once('value',function(snap){
+    let offerData=snap.val();
+    if(!offerData||!offerData.sdp){
       statusEl.style.color='#f44';
-      statusEl.innerHTML='Disconnected from server. <button class="mp-btn back-btn" style="display:inline;font-size:11px;padding:4px 12px;" onclick="joinRoom()">RETRY</button>';
+      statusEl.innerHTML='Room not found. Check code. <button class="mp-btn back-btn" style="display:inline;font-size:11px;padding:4px 12px;" onclick="joinRoom()">RETRY</button>';
+      return;
     }
+    mpRoomCode=code;
+    statusEl.textContent='Found room! Connecting...';
+    let pc=mpCreateWebRTC(false,function(evt){
+      if(evt==='connected'){
+        statusEl.className='mp-ready';
+        statusEl.textContent='Connected to host!';
+        document.getElementById('joinLobby').style.display='block';
+      } else if(evt==='failed'||evt==='disconnected'){
+        if(mpGuestConnected) return;
+        statusEl.style.color='#f44';
+        statusEl.innerHTML='Connection failed. <button class="mp-btn back-btn" style="display:inline;font-size:11px;padding:4px 12px;" onclick="joinRoom()">RETRY</button>';
+      }
+    });
+    roomRef.child('guest').set(true);
+    roomRef.child('guest').onDisconnect().remove();
+    pc.setRemoteDescription({type:offerData.type,sdp:offerData.sdp}).then(function(){
+      return pc.createAnswer();
+    }).then(function(answer){
+      return pc.setLocalDescription(answer);
+    }).then(function(){
+      roomRef.child('answer').set({sdp:pc.localDescription.sdp,type:pc.localDescription.type,ts:firebase.database.ServerValue.TIMESTAMP});
+    }).catch(function(e){
+      statusEl.style.color='#f44';
+      statusEl.innerHTML='Error: '+e.message;
+    });
+  }).catch(function(e){
+    statusEl.style.color='#f44';
+    statusEl.innerHTML='Error: '+e.message;
   });
 }
 
