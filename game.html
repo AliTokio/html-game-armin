@@ -3,7 +3,7 @@
 <html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
 
 <title>Dota Zero</title>
-<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a12; font-family: 'Segoe UI', Arial, sans-serif; }
@@ -504,61 +504,51 @@ let particles=[],bullets=[],floatingTexts=[];
 let screenShake=0,p1,p2;
 let aiShootCD=0,aiAbilityCD=0;
 
-let mpMode=false, mpIsHost=false, mpPeer=null, mpConn=null;
+let mpMode=false, mpIsHost=false, mpConn=null, mpSocket=null, mpPeerConn=null;
 let mpHostChar=null, mpGuestChar=null, mpGuestConnected=false;
-let mpSentInputs={};
 const HERO_NAMES={sniper:'SNIPER',archer:'DROW RANGER',pa:'PHANTOM ASSASSIN',morphling:'MORPHLING',chrono:'VOID',sky:'SKYWRATH MAGE'};
-const MP_ICE=[
-  {urls:'stun:stun.l.google.com:19302'},
-  {urls:'stun:stun1.l.google.com:19302'},
-  {urls:'stun:stun2.l.google.com:19302'},
-  {urls:'stun:stun3.l.google.com:19302'},
-  {urls:'stun:stun4.l.google.com:19302'},
-  {urls:'turn:openrelay.metered.ca:80',username:'openrelayproject',credential:'openrelayproject'},
-  {urls:'turn:openrelay.metered.ca:443',username:'openrelayproject',credential:'openrelayproject'},
-  {urls:'turn:openrelay.metered.ca:443?transport=tcp',username:'openrelayproject',credential:'openrelayproject'}
-];
-const MP_PEER_CONFIG={iceServers:MP_ICE,iceCandidatePoolSize:2};
+const MP_ICE=[{urls:'stun:stun.l.google.com:19302'},{urls:'stun:stun1.l.google.com:19302'},{urls:'stun:stun2.l.google.com:19302'},{urls:'stun:stun3.l.google.com:19302'},{urls:'stun:stun4.l.google.com:19302'}];
 
-let mpServers=[
-  {host:'0.peerjs.com',port:443,path:'/peerjs',secure:true},
-  {host:'0.peerjs.com',port:9000,path:'/peerjs',secure:false}
-];
+function mpSendData(data){ if(mpConn&&mpConn.readyState==='open') try{mpConn.send(JSON.stringify(data));}catch(e){} }
 
-function mpSendData(data){ if(mpConn&&mpConn.open) try{mpConn.send(data);}catch(e){} }
-
-function mpDestroyPeer(){
-  if(mpPeer){try{mpPeer.destroy();}catch(e){} mpPeer=null;}
-  mpConn=null; mpGuestConnected=false;
+function mpCleanup(){
+  if(mpConn){try{mpConn.close();}catch(e){} mpConn=null;}
+  if(mpPeerConn){try{mpPeerConn.close();}catch(e){} mpPeerConn=null;}
+  if(mpSocket){try{mpSocket.disconnect();}catch(e){} mpSocket=null;}
+  mpGuestConnected=false;
 }
 
 function showMpMenu(){ initAudio(); playSound('menuClick'); document.getElementById('mpMenu').style.display='flex'; }
 function closeMpMenu(){ playSound('menuClick'); document.getElementById('mpMenu').style.display='none'; }
 
-function mpCreatePeerWithFallback(id,serverIndex,onOpen,onConn,onError,onDisconnect){
-  if(serverIndex>=mpServers.length){
-    document.getElementById(serverIndex<=0?'createStatus':'joinStatus').style.color='#f44';
-    document.getElementById(serverIndex<=0?'createStatus':'joinStatus').innerHTML='All servers failed. Check internet. <button class="mp-btn back-btn" style="display:inline;font-size:11px;padding:4px 12px;" onclick="'+(mpIsHost?'showCreateRoom()':'joinRoom()')+'()">RETRY</button>';
-    return;
+const MP_SERVER=(location.hostname==='localhost'||location.hostname==='127.0.0.1')
+  ?'http://localhost:3000'
+  :'https://dota-zero-signaling.onrender.com';
+
+function mpCreateWebRTC(socket,isHost,cb){
+  let pc=new RTCPeerConnection({iceServers:MP_ICE});
+  mpPeerConn=pc;
+  if(isHost){
+    let dc=pc.createDataChannel('game',{ordered:true});
+    mpConn=dc;
+    dc.onopen=function(){ mpGuestConnected=true; cb('connected'); };
+    dc.onmessage=function(e){ handleGuestData(JSON.parse(e.data)); };
+    dc.onclose=function(){ mpGuestConnected=false; cb('disconnected'); };
+  } else {
+    pc.ondatachannel=function(e){
+      let dc=e.channel;
+      mpConn=dc;
+      dc.onopen=function(){ mpGuestConnected=true; cb('connected'); };
+      dc.onmessage=function(ev){ handleHostData(JSON.parse(ev.data)); };
+      dc.onclose=function(){ mpGuestConnected=false; cb('disconnected'); };
+    };
   }
-  let sv=mpServers[serverIndex];
-  mpDestroyPeer();
-  let peer;
-  try{ peer=new Peer(id,{host:sv.host,port:sv.port,path:sv.path,secure:sv.secure,config:MP_PEER_CONFIG,debug:0}); }catch(e){
-    mpCreatePeerWithFallback(id,serverIndex+1,onOpen,onConn,onError,onDisconnect);
-    return;
-  }
-  mpPeer=peer;
-  peer.on('open',function(rid){ onOpen(rid,peer); });
-  peer.on('connection',function(conn){ onConn(conn); });
-  peer.on('error',function(e){
-    if(e.type==='peer-unavailable'||e.type==='network'||e.type==='socket-error'||e.type==='socket-closed'){
-      mpCreatePeerWithFallback(id,serverIndex+1,onOpen,onConn,onError,onDisconnect);
-    } else {
-      onError(e);
-    }
-  });
-  peer.on('disconnected',function(){ onDisconnect(peer); });
+  pc.oniceconnectionstatechange=function(){
+    let st=pc.iceConnectionState;
+    if(st==='failed') cb('failed');
+    if(st==='disconnected') cb('disconnected');
+  };
+  return pc;
 }
 
 function showCreateRoom(){
@@ -569,61 +559,61 @@ function showCreateRoom(){
   document.getElementById('createStatus').textContent='Connecting to server...';
   document.getElementById('createLobby').style.display='none';
   document.getElementById('roomCodeDisplay').textContent='------';
-  mpDestroyPeer();
+  mpCleanup();
   mpIsHost=true; mpMode=true;
-  let id='dota0-'+Math.random().toString(36).substr(2,6);
   let statusEl=document.getElementById('createStatus');
-  let failCount=0;
-  function tryServer(idx){
-    if(idx>=mpServers.length){
-      statusEl.style.color='#f44';
-      statusEl.innerHTML='All servers failed. Check internet & try again. <button class="mp-btn back-btn" style="display:inline;font-size:11px;padding:4px 12px;" onclick="showCreateRoom()">RETRY</button>';
-      return;
-    }
-    let sv=mpServers[idx];
-    statusEl.textContent='Trying server '+(idx+1)+'/'+mpServers.length+'...';
-    if(mpPeer){try{mpPeer.destroy();}catch(e){} mpPeer=null;}
-    let peer;
-    try{ peer=new Peer(id,{host:sv.host,port:sv.port,path:sv.path,secure:sv.secure,config:MP_PEER_CONFIG,debug:0}); }catch(e){
-      tryServer(idx+1); return;
-    }
-    mpPeer=peer;
-    let gotOpen=false;
-    peer.on('open',function(rid){
-      gotOpen=true;
-      document.getElementById('roomCodeDisplay').textContent=rid.replace('dota0-','').toUpperCase();
+  let socket=io(MP_SERVER,{transports:['websocket','polling'],timeout:10000,reconnection:true,reconnectionAttempts:3});
+  mpSocket=socket;
+  socket.on('connect',function(){
+    statusEl.textContent='Connected! Creating room...';
+    socket.emit('create-room',function(res){
+      if(res.error){ statusEl.style.color='#f44'; statusEl.innerHTML=res.error+' <button class="mp-btn back-btn" style="display:inline;font-size:11px;padding:4px 12px;" onclick="showCreateRoom()">RETRY</button>'; return; }
+      document.getElementById('roomCodeDisplay').textContent=res.code;
       statusEl.className='mp-ready';
-      statusEl.textContent='Room ready! Share this code with your friend.';
+      statusEl.textContent='Share this code with your friend!';
     });
-    peer.on('connection',function(conn){
-      mpConn=conn; mpGuestConnected=true;
-      conn.on('data',function(data){ handleGuestData(data); });
-      conn.on('close',function(){
-        mpGuestConnected=false; mpConn=null;
-        document.getElementById('guestHeroPick').textContent='Disconnected';
-        document.getElementById('mpStartBtn').disabled=true;
-      });
-      statusEl.className='mp-ready';
-      statusEl.textContent='Opponent connected!';
-      document.getElementById('createLobby').style.display='block';
-    });
-    peer.on('error',function(e){
-      if(!gotOpen&&(e.type==='peer-unavailable'||e.type==='network'||e.type==='socket-error'||e.type==='socket-closed'||e.type==='unavailable-id')){
-        tryServer(idx+1);
-      } else {
+  });
+  socket.on('guest-joined',function(){
+    statusEl.textContent='Opponent joined! Establishing connection...';
+    let pc=mpCreateWebRTC(socket,true,function(evt){
+      if(evt==='connected'){
+        statusEl.className='mp-ready';
+        statusEl.textContent='Opponent connected!';
+        document.getElementById('createLobby').style.display='block';
+      } else if(evt==='failed'||evt==='disconnected'){
+        if(mpGuestConnected) return;
         statusEl.style.color='#f44';
-        statusEl.innerHTML='Error: '+e.type+'. <button class="mp-btn back-btn" style="display:inline;font-size:11px;padding:4px 12px;" onclick="showCreateRoom()">RETRY</button>';
+        statusEl.innerHTML='P2P connection failed. <button class="mp-btn back-btn" style="display:inline;font-size:11px;padding:4px 12px;" onclick="showCreateRoom()">RETRY</button>';
       }
     });
-    peer.on('disconnected',function(){
-      if(!gotOpen){
-        statusEl.style.color='#ff0';
-        statusEl.textContent='Reconnecting...';
-        try{peer.reconnect();}catch(e){}
-      }
-    });
-  }
-  tryServer(0);
+    pc.createOffer().then(function(offer){ return pc.setLocalDescription(offer); }).then(function(){
+      socket.emit('signal',{type:'offer',sdp:pc.localDescription.sdp});
+    }).catch(function(e){ statusEl.style.color='#f44'; statusEl.textContent='Error: '+e.message; });
+  });
+  socket.on('signal',function(data){
+    if(data.type==='answer'&&mpPeerConn){
+      mpPeerConn.setRemoteDescription({type:'answer',sdp:data.sdp}).catch(function(){});
+    }
+  });
+  socket.on('guest-disconnected',function(){
+    mpGuestConnected=false; mpConn=null;
+    document.getElementById('guestHeroPick').textContent='Disconnected';
+    document.getElementById('mpStartBtn').disabled=true;
+  });
+  socket.on('room-expired',function(){
+    statusEl.style.color='#f44';
+    statusEl.innerHTML='Room expired. <button class="mp-btn back-btn" style="display:inline;font-size:11px;padding:4px 12px;" onclick="showCreateRoom()">RETRY</button>';
+  });
+  socket.on('connect_error',function(){
+    statusEl.style.color='#f44';
+    statusEl.innerHTML='Cannot reach server. <button class="mp-btn back-btn" style="display:inline;font-size:11px;padding:4px 12px;" onclick="showCreateRoom()">RETRY</button>';
+  });
+  socket.on('disconnect',function(){
+    if(!mpGuestConnected){
+      statusEl.style.color='#f44';
+      statusEl.innerHTML='Disconnected from server. <button class="mp-btn back-btn" style="display:inline;font-size:11px;padding:4px 12px;" onclick="showCreateRoom()">RETRY</button>';
+    }
+  });
 }
 
 function showJoinRoom(){
@@ -636,80 +626,68 @@ function showJoinRoom(){
 }
 
 function joinRoom(){
-  let code=document.getElementById('joinCodeInput').value.trim().toLowerCase();
+  let code=document.getElementById('joinCodeInput').value.trim().toUpperCase();
   if(!code||code.length<3){ document.getElementById('joinStatus').style.color='#f44'; document.getElementById('joinStatus').textContent='Enter a valid code'; return; }
   document.getElementById('joinStatus').style.color='#ff0';
-  document.getElementById('joinStatus').textContent='Connecting...';
-  mpDestroyPeer();
+  document.getElementById('joinStatus').textContent='Connecting to server...';
+  mpCleanup();
   mpIsHost=false; mpMode=true;
   let statusEl=document.getElementById('joinStatus');
-  function tryServer(idx){
-    if(idx>=mpServers.length){
-      statusEl.style.color='#f44';
-      statusEl.innerHTML='All servers failed. Check internet. <button class="mp-btn back-btn" style="display:inline;font-size:11px;padding:4px 12px;" onclick="joinRoom()">RETRY</button>';
-      return;
-    }
-    let sv=mpServers[idx];
-    statusEl.textContent='Trying server '+(idx+1)+'/'+mpServers.length+'...';
-    if(mpPeer){try{mpPeer.destroy();}catch(e){} mpPeer=null;}
-    let peer;
-    try{ peer=new Peer(null,{host:sv.host,port:sv.port,path:sv.path,secure:sv.secure,config:MP_PEER_CONFIG,debug:0}); }catch(e){
-      tryServer(idx+1); return;
-    }
-    mpPeer=peer;
-    let gotOpen=false, gotConn=false;
-    peer.on('open',function(){
-      gotOpen=true;
-      statusEl.textContent='Connected to server. Joining room...';
-      let conn;
-      try{ conn=peer.connect('dota0-'+code,{reliable:true,serialization:'json',config:MP_PEER_CONFIG}); }catch(e){
-        tryServer(idx+1); return;
+  let socket=io(MP_SERVER,{transports:['websocket','polling'],timeout:10000,reconnection:true,reconnectionAttempts:3});
+  mpSocket=socket;
+  socket.on('connect',function(){
+    statusEl.textContent='Connected! Joining room...';
+    socket.emit('join-room',code,function(res){
+      if(res.error){
+        statusEl.style.color='#f44';
+        statusEl.innerHTML=res.error+'. <button class="mp-btn back-btn" style="display:inline;font-size:11px;padding:4px 12px;" onclick="joinRoom()">RETRY</button>';
+        return;
       }
-      mpConn=conn;
-      let joinTimer=setTimeout(function(){
-        if(!gotConn){
-          tryServer(idx+1);
+      statusEl.textContent='Joined! Establishing connection...';
+      mpCreateWebRTC(socket,false,function(evt){
+        if(evt==='connected'){
+          statusEl.className='mp-ready';
+          statusEl.textContent='Connected to host!';
+          document.getElementById('joinLobby').style.display='block';
+        } else if(evt==='failed'||evt==='disconnected'){
+          if(mpGuestConnected) return;
+          statusEl.style.color='#f44';
+          statusEl.innerHTML='P2P failed. <button class="mp-btn back-btn" style="display:inline;font-size:11px;padding:4px 12px;" onclick="joinRoom()">RETRY</button>';
         }
-      },15000);
-      conn.on('open',function(){
-        gotConn=true; clearTimeout(joinTimer);
-        mpGuestConnected=true;
-        statusEl.className='mp-ready';
-        statusEl.textContent='Connected to host!';
-        document.getElementById('joinLobby').style.display='block';
-      });
-      conn.on('data',function(data){ handleHostData(data); });
-      conn.on('close',function(){
-        gotConn=true;
-        statusEl.style.color='#f44';
-        statusEl.textContent='Disconnected from host';
-        document.getElementById('joinLobby').style.display='none';
-      });
-      conn.on('error',function(e){
-        gotConn=true; clearTimeout(joinTimer);
-        tryServer(idx+1);
       });
     });
-    peer.on('error',function(e){
-      if(!gotOpen&&(e.type==='peer-unavailable'||e.type==='network'||e.type==='socket-error'||e.type==='socket-closed')){
-        tryServer(idx+1);
-      } else if(gotOpen&&e.type==='peer-unavailable'){
-        statusEl.style.color='#f44';
-        statusEl.innerHTML='Room not found. Check the code. <button class="mp-btn back-btn" style="display:inline;font-size:11px;padding:4px 12px;" onclick="joinRoom()">RETRY</button>';
-      } else {
-        statusEl.style.color='#f44';
-        statusEl.innerHTML='Error: '+e.type+'. <button class="mp-btn back-btn" style="display:inline;font-size:11px;padding:4px 12px;" onclick="joinRoom()">RETRY</button>';
-      }
-    });
-    peer.on('disconnected',function(){
-      if(!gotConn){
-        statusEl.style.color='#ff0';
-        statusEl.textContent='Reconnecting...';
-        try{peer.reconnect();}catch(e){}
-      }
-    });
-  }
-  tryServer(0);
+  });
+  socket.on('signal',function(data){
+    if(data.type==='offer'&&mpPeerConn){
+      mpPeerConn.setRemoteDescription({type:'offer',sdp:data.sdp}).then(function(){
+        return mpPeerConn.createAnswer();
+      }).then(function(answer){
+        return mpPeerConn.setLocalDescription(answer);
+      }).then(function(){
+        socket.emit('signal',{type:'answer',sdp:mpPeerConn.localDescription.sdp});
+      }).catch(function(e){ statusEl.style.color='#f44'; statusEl.textContent='Error: '+e.message; });
+    }
+  });
+  socket.on('host-disconnected',function(){
+    mpGuestConnected=false; mpConn=null;
+    statusEl.style.color='#f44';
+    statusEl.innerHTML='Host disconnected. <button class="mp-btn back-btn" style="display:inline;font-size:11px;padding:4px 12px;" onclick="joinRoom()">RETRY</button>';
+    document.getElementById('joinLobby').style.display='none';
+  });
+  socket.on('room-expired',function(){
+    statusEl.style.color='#f44';
+    statusEl.innerHTML='Room expired. <button class="mp-btn back-btn" style="display:inline;font-size:11px;padding:4px 12px;" onclick="joinRoom()">RETRY</button>';
+  });
+  socket.on('connect_error',function(){
+    statusEl.style.color='#f44';
+    statusEl.innerHTML='Cannot reach server. <button class="mp-btn back-btn" style="display:inline;font-size:11px;padding:4px 12px;" onclick="joinRoom()">RETRY</button>';
+  });
+  socket.on('disconnect',function(){
+    if(!mpGuestConnected){
+      statusEl.style.color='#f44';
+      statusEl.innerHTML='Disconnected from server. <button class="mp-btn back-btn" style="display:inline;font-size:11px;padding:4px 12px;" onclick="joinRoom()">RETRY</button>';
+    }
+  });
 }
 
 function mpPickHero(c,el){
@@ -2997,7 +2975,7 @@ function returnToMpMenu(){
   playerWins=0; aiWins=0; currentRound=1;
   screenShake=0;
   bullets=[]; particles=[]; floatingTexts=[];
-  mpDestroyPeer();
+  mpCleanup();
   document.getElementById('menu').style.display='flex';
 }
 
@@ -3006,7 +2984,7 @@ function closeMpLobby(){
   document.getElementById('createRoomPanel').style.display='none';
   document.getElementById('joinRoomPanel').style.display='none';
   document.getElementById('mpMenu').style.display='none';
-  mpDestroyPeer();
+  mpCleanup();
   mpMode=false; mpIsHost=false;
   mpHostChar=null; mpGuestChar=null;
 }
