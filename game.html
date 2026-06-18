@@ -582,14 +582,14 @@ function showCreateRoom(){
     }
   });
   pc.onicecandidate=function(e){
-    if(e.candidate) return;
-    if(pc.localDescription){
-      roomRef.child('offer').set({sdp:pc.localDescription.sdp,type:pc.localDescription.type,ts:firebase.database.ServerValue.TIMESTAMP});
+    if(e.candidate){
+      roomRef.child('hostCandidates').push(JSON.parse(JSON.stringify(e.candidate)));
     }
   };
   pc.createOffer().then(function(offer){
     return pc.setLocalDescription(offer);
   }).then(function(){
+    roomRef.child('offer').set({sdp:pc.localDescription.sdp,type:pc.localDescription.type});
     document.getElementById('roomCodeDisplay').textContent=code;
     statusEl.className='mp-ready';
     statusEl.textContent='Room ready! Share code with friend.';
@@ -599,8 +599,14 @@ function showCreateRoom(){
   });
   roomRef.child('answer').on('value',function(snap){
     let data=snap.val();
-    if(data&&data.sdp&&mpPeerConn){
-      mpPeerConn.setRemoteDescription({type:data.type,sdp:data.sdp}).catch(function(){});
+    if(data&&data.sdp&&mpPeerConn&&mpPeerConn.signalingState==='have-local-offer'){
+      mpPeerConn.setRemoteDescription({type:data.type,sdp:data.sdp}).catch(function(e){});
+    }
+  });
+  roomRef.child('guestCandidates').on('child_added',function(snap){
+    let cand=snap.val();
+    if(cand&&mpPeerConn){
+      mpPeerConn.addIceCandidate(new RTCIceCandidate(cand)).catch(function(){});
     }
   });
   roomRef.child('guest').on('value',function(snap){
@@ -650,6 +656,11 @@ function joinRoom(){
         statusEl.innerHTML='Connection failed. <button class="mp-btn back-btn" style="display:inline;font-size:11px;padding:4px 12px;" onclick="joinRoom()">RETRY</button>';
       }
     });
+    pc.onicecandidate=function(e){
+      if(e.candidate){
+        roomRef.child('guestCandidates').push(JSON.parse(JSON.stringify(e.candidate)));
+      }
+    };
     roomRef.child('guest').set(true);
     roomRef.child('guest').onDisconnect().remove();
     pc.setRemoteDescription({type:offerData.type,sdp:offerData.sdp}).then(function(){
@@ -657,10 +668,16 @@ function joinRoom(){
     }).then(function(answer){
       return pc.setLocalDescription(answer);
     }).then(function(){
-      roomRef.child('answer').set({sdp:pc.localDescription.sdp,type:pc.localDescription.type,ts:firebase.database.ServerValue.TIMESTAMP});
+      roomRef.child('answer').set({sdp:pc.localDescription.sdp,type:pc.localDescription.type});
     }).catch(function(e){
       statusEl.style.color='#f44';
       statusEl.innerHTML='Error: '+e.message;
+    });
+    roomRef.child('hostCandidates').on('child_added',function(snap2){
+      let cand=snap2.val();
+      if(cand&&mpPeerConn){
+        mpPeerConn.addIceCandidate(new RTCIceCandidate(cand)).catch(function(){});
+      }
     });
   }).catch(function(e){
     statusEl.style.color='#f44';
