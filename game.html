@@ -507,7 +507,15 @@ let aiShootCD=0,aiAbilityCD=0;
 let mpMode=false, mpIsHost=false, mpConn=null, mpSocket=null, mpPeerConn=null;
 let mpHostChar=null, mpGuestChar=null, mpGuestConnected=false;
 const HERO_NAMES={sniper:'SNIPER',archer:'DROW RANGER',pa:'PHANTOM ASSASSIN',morphling:'MORPHLING',chrono:'VOID',sky:'SKYWRATH MAGE'};
-const MP_ICE=[{urls:'stun:stun.l.google.com:19302'},{urls:'stun:stun1.l.google.com:19302'},{urls:'stun:stun2.l.google.com:19302'},{urls:'stun:stun3.l.google.com:19302'},{urls:'stun:stun4.l.google.com:19302'}];
+const MP_ICE=[
+  {urls:'stun:stun.l.google.com:19302'},
+  {urls:'stun:stun1.l.google.com:19302'},
+  {urls:'stun:stun2.l.google.com:19302'},
+  {urls:'stun:stun3.l.google.com:19302'},
+  {urls:'turn:openrelay.metered.ca:80',username:'openrelayproject',credential:'openrelayproject'},
+  {urls:'turn:openrelay.metered.ca:443',username:'openrelayproject',credential:'openrelayproject'},
+  {urls:'turn:openrelay.metered.ca:443?transport=tcp',username:'openrelayproject',credential:'openrelayproject'}
+];
 
 function mpSendData(data){ if(mpConn&&mpConn.readyState==='open') try{mpConn.send(JSON.stringify(data));}catch(e){} }
 
