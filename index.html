@@ -541,10 +541,15 @@ function showCreateRoom(){
   statusEl.textContent='Pick your hero and share code with friend.';
   document.getElementById('createLobby').style.display='block';
   mpRoomRef.child('guestChar').on('value',function(snap){
-    if(snap.val()&&!mpGuestConnected){
+    let val=snap.val();
+    if(val){
+      mpGuestChar=val;
       mpGuestConnected=true;
-      statusEl.textContent='Opponent joined!';
+      document.getElementById('guestHeroPick').textContent=HERO_NAMES[val]||val.toUpperCase();
+      document.getElementById('guestHeroPick').style.color=CHAR_COLORS[val];
+      statusEl.textContent='Opponent picked '+HERO_NAMES[val]+'!';
       document.getElementById('createLobby').style.display='block';
+      checkMpReady();
     }
   });
 }
