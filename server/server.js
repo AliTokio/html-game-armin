@@ -12,8 +12,6 @@ const io = new Server(server, {
   allowEIO3: true
 });
 
-app.use(express.static(path.join(__dirname, '..')));
-
 const rooms = {};
 
 function genCode() {
@@ -86,7 +84,7 @@ io.on('connection', (socket) => {
   });
 });
 
-app.get('/', (req, res) => res.send('Dota Zero Signaling Server OK'));
+app.get('/', (req, res) => res.sendFile(path.join(__dirname, '..', 'game.html')));
 
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log('Server running on port ' + PORT));
+const PORT = process.env.PORT || 3001;
+server.listen(PORT, '0.0.0.0', () => console.log('Server running on port ' + PORT));
