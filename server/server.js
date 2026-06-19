@@ -75,12 +75,18 @@ io.on('connection', (socket) => {
     if (socket.isHost) {
       if (room.guest) io.to(room.guest).emit('host-disconnected');
       delete rooms[code];
-      console.log('host left, room deleted:', code);
     } else {
       if (room.host) io.to(room.host).emit('guest-disconnected');
       room.guest = null;
-      console.log('guest left room:', code);
     }
+  });
+
+  socket.on('game-data', (data) => {
+    const code = socket.roomCode;
+    if (!code || !rooms[code]) return;
+    const room = rooms[code];
+    const target = socket.isHost ? room.guest : room.host;
+    if (target) io.to(target).emit('game-data', data);
   });
 });
 

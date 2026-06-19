@@ -504,24 +504,13 @@ let particles=[],bullets=[],floatingTexts=[];
 let screenShake=0,p1,p2;
 let aiShootCD=0,aiAbilityCD=0;
 
-let mpMode=false, mpIsHost=false, mpConn=null, mpSocket=null, mpPeerConn=null;
+let mpMode=false, mpIsHost=false, mpSocket=null;
 let mpHostChar=null, mpGuestChar=null, mpGuestConnected=false;
 const HERO_NAMES={sniper:'SNIPER',archer:'DROW RANGER',pa:'PHANTOM ASSASSIN',morphling:'MORPHLING',chrono:'VOID',sky:'SKYWRATH MAGE'};
-const MP_ICE=[
-  {urls:'stun:stun.l.google.com:19302'},
-  {urls:'stun:stun1.l.google.com:19302'},
-  {urls:'stun:stun2.l.google.com:19302'},
-  {urls:'stun:stun3.l.google.com:19302'},
-  {urls:'turn:openrelay.metered.ca:80',username:'openrelayproject',credential:'openrelayproject'},
-  {urls:'turn:openrelay.metered.ca:443',username:'openrelayproject',credential:'openrelayproject'},
-  {urls:'turn:openrelay.metered.ca:443?transport=tcp',username:'openrelayproject',credential:'openrelayproject'}
-];
 
-function mpSendData(data){ if(mpConn&&mpConn.readyState==='open') try{mpConn.send(JSON.stringify(data));}catch(e){} }
+function mpSendData(data){ if(mpSocket&&mpSocket.connected) try{mpSocket.emit('game-data',data);}catch(e){} }
 
 function mpCleanup(){
-  if(mpConn){try{mpConn.close();}catch(e){} mpConn=null;}
-  if(mpPeerConn){try{mpPeerConn.close();}catch(e){} mpPeerConn=null;}
   if(mpSocket){try{mpSocket.removeAllListeners();mpSocket.disconnect();}catch(e){} mpSocket=null;}
   mpGuestConnected=false;
 }
@@ -530,35 +519,6 @@ function showMpMenu(){ initAudio(); playSound('menuClick'); document.getElementB
 function closeMpMenu(){ playSound('menuClick'); document.getElementById('mpMenu').style.display='none'; }
 
 const MP_SERVER=window.location.origin;
-
-function mpCreateWebRTC(socket,isHost,cb){
-  let pc=new RTCPeerConnection({iceServers:MP_ICE});
-  mpPeerConn=pc;
-  if(isHost){
-    let dc=pc.createDataChannel('game',{ordered:true});
-    mpConn=dc;
-    dc.onopen=function(){ mpGuestConnected=true; cb('connected'); };
-    dc.onmessage=function(e){ handleGuestData(JSON.parse(e.data)); };
-    dc.onclose=function(){ mpGuestConnected=false; cb('disconnected'); };
-  } else {
-    pc.ondatachannel=function(e){
-      let dc=e.channel; mpConn=dc;
-      dc.onopen=function(){ mpGuestConnected=true; cb('connected'); };
-      dc.onmessage=function(ev){ handleHostData(JSON.parse(ev.data)); };
-      dc.onclose=function(){ mpGuestConnected=false; cb('disconnected'); };
-    };
-  }
-  pc.onicecandidate=function(e){
-    if(e.candidate) socket.emit('signal',{type:'ice-candidate',candidate:JSON.parse(JSON.stringify(e.candidate))});
-  };
-  pc.oniceconnectionstatechange=function(){
-    let st=pc.iceConnectionState;
-    if(st==='connected'||st==='completed') cb('connected');
-    if(st==='failed') cb('failed');
-    if(st==='disconnected'&&mpGuestConnected) cb('disconnected');
-  };
-  return pc;
-}
 
 function mpConnectSocket(statusEl){
   return new Promise(function(resolve,reject){
@@ -602,37 +562,18 @@ function showCreateRoom(){
       statusEl.textContent='Room ready! Share code with friend.';
     });
     socket.on('guest-joined',function(){
-      statusEl.textContent='Opponent joined! Connecting...';
-      let pc=mpCreateWebRTC(socket,true,function(evt){
-        if(evt==='connected'){
-          statusEl.className='mp-ready';
-          statusEl.textContent='Opponent connected!';
-          document.getElementById('createLobby').style.display='block';
-        } else if(evt==='failed'||evt==='disconnected'){
-          if(mpGuestConnected) return;
-          statusEl.style.color='#f44';
-          statusEl.innerHTML='Connection failed. <button class="mp-btn back-btn" style="display:inline;font-size:11px;padding:4px 12px;" onclick="showCreateRoom()">RETRY</button>';
-        }
-      });
-      pc.createOffer().then(function(offer){ return pc.setLocalDescription(offer); }).then(function(){
-        socket.emit('signal',{type:'offer',sdp:mpPeerConn.localDescription.sdp});
-      }).catch(function(e){
-        statusEl.style.color='#f44';
-        statusEl.innerHTML='Error: '+e.message;
-      });
+      mpGuestConnected=true;
+      statusEl.className='mp-ready';
+      statusEl.textContent='Opponent connected!';
+      document.getElementById('createLobby').style.display='block';
     });
-    socket.on('signal',function(data){
-      if(data.type==='answer'&&mpPeerConn&&mpPeerConn.signalingState==='have-local-offer'){
-        mpPeerConn.setRemoteDescription({type:'answer',sdp:data.sdp}).catch(function(){});
-      }
-      if(data.type==='ice-candidate'&&mpPeerConn&&data.candidate){
-        mpPeerConn.addIceCandidate(new RTCIceCandidate(data.candidate)).catch(function(){});
-      }
-    });
+    socket.on('game-data',function(data){ handleGuestData(data); });
     socket.on('guest-disconnected',function(){
-      mpGuestConnected=false; mpConn=null;
+      mpGuestConnected=false;
       document.getElementById('guestHeroPick').textContent='Disconnected';
       document.getElementById('mpStartBtn').disabled=true;
+      statusEl.style.color='#ff0';
+      statusEl.textContent='Opponent disconnected.';
     });
   }).catch(function(){});
 }
@@ -661,38 +602,14 @@ function joinRoom(){
         statusEl.innerHTML=res.error+'. <button class="mp-btn back-btn" style="display:inline;font-size:11px;padding:4px 12px;" onclick="joinRoom()">RETRY</button>';
         return;
       }
-      statusEl.textContent='Joined! Connecting...';
-      let pc=mpCreateWebRTC(socket,false,function(evt){
-        if(evt==='connected'){
-          statusEl.className='mp-ready';
-          statusEl.textContent='Connected to host!';
-          document.getElementById('joinLobby').style.display='block';
-        } else if(evt==='failed'||evt==='disconnected'){
-          if(mpGuestConnected) return;
-          statusEl.style.color='#f44';
-          statusEl.innerHTML='P2P failed. <button class="mp-btn back-btn" style="display:inline;font-size:11px;padding:4px 12px;" onclick="joinRoom()">RETRY</button>';
-        }
-      });
-      socket.on('signal',function(data){
-        if(data.type==='offer'&&mpPeerConn){
-          mpPeerConn.setRemoteDescription({type:'offer',sdp:data.sdp}).then(function(){
-            return mpPeerConn.createAnswer();
-          }).then(function(answer){
-            return mpPeerConn.setLocalDescription(answer);
-          }).then(function(){
-            socket.emit('signal',{type:'answer',sdp:mpPeerConn.localDescription.sdp});
-          }).catch(function(e){
-            statusEl.style.color='#f44';
-            statusEl.innerHTML='Error: '+e.message;
-          });
-        }
-        if(data.type==='ice-candidate'&&mpPeerConn&&data.candidate){
-          mpPeerConn.addIceCandidate(new RTCIceCandidate(data.candidate)).catch(function(){});
-        }
-      });
+      mpGuestConnected=true;
+      statusEl.className='mp-ready';
+      statusEl.textContent='Connected to host!';
+      document.getElementById('joinLobby').style.display='block';
     });
+    socket.on('game-data',function(data){ handleHostData(data); });
     socket.on('host-disconnected',function(){
-      mpGuestConnected=false; mpConn=null;
+      mpGuestConnected=false;
       statusEl.style.color='#f44';
       statusEl.innerHTML='Host disconnected. <button class="mp-btn back-btn" style="display:inline;font-size:11px;padding:4px 12px;" onclick="joinRoom()">RETRY</button>';
       document.getElementById('joinLobby').style.display='none';
