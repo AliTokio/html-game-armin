@@ -538,7 +538,8 @@ function showCreateRoom(){
   mpRoomRef.onDisconnect().remove();
   document.getElementById('roomCodeDisplay').textContent=code;
   statusEl.className='mp-ready';
-  statusEl.textContent='Room ready! Share code with friend.';
+  statusEl.textContent='Pick your hero and share code with friend.';
+  document.getElementById('createLobby').style.display='block';
   mpRoomRef.child('guestChar').on('value',function(snap){
     if(snap.val()&&!mpGuestConnected){
       mpGuestConnected=true;
