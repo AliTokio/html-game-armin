@@ -521,7 +521,7 @@ function mpCleanup(){
 function showMpMenu(){ initAudio(); playSound('menuClick'); document.getElementById('mpMenu').style.display='flex'; }
 function closeMpMenu(){ playSound('menuClick'); document.getElementById('mpMenu').style.display='none'; }
 
-const MP_SERVER='https://fc386e06-648b-4480-b194-57c5ffcd2f25-00-1xfcw70db9o7k.riker.replit.dev';
+const MP_SERVER=window.location.origin;
 
 function mpCreateWebRTC(socket,isHost,cb){
   let pc=new RTCPeerConnection({iceServers:MP_ICE});
