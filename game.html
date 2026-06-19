@@ -3,7 +3,8 @@
 <html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
 
 <title>Dota Zero</title>
-<script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a12; font-family: 'Segoe UI', Arial, sans-serif; }
@@ -214,6 +215,9 @@ body { display: flex; justify-content: center; align-items: center; }
   <button class="mp-btn back-btn" onclick="closeMpLobby()">CANCEL</button>
 </div>
 <script>
+firebase.initializeApp({apiKey:"AIzaSyD9eO_hbvPsFIf9QQ6cTGbY4J6bydEBQlc",authDomain:"dota-zero.firebaseapp.com",databaseURL:"https://dota-zero-default-rtdb.europe-west1.firebasedatabase.app",projectId:"dota-zero",storageBucket:"dota-zero.firebasestorage.app",messagingSenderId:"293951512923",appId:"1:293951512923:web:d358f17b72da01693d3a7e"});
+const fdb=firebase.database();
+
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
 canvas.width = 1280; canvas.height = 720;
@@ -504,78 +508,44 @@ let particles=[],bullets=[],floatingTexts=[];
 let screenShake=0,p1,p2;
 let aiShootCD=0,aiAbilityCD=0;
 
-let mpMode=false, mpIsHost=false, mpSocket=null;
+let mpMode=false, mpIsHost=false, mpRoomRef=null;
 let mpHostChar=null, mpGuestChar=null, mpGuestConnected=false;
+let mpPendingActions=[], mpInputInterval=null;
 const HERO_NAMES={sniper:'SNIPER',archer:'DROW RANGER',pa:'PHANTOM ASSASSIN',morphling:'MORPHLING',chrono:'VOID',sky:'SKYWRATH MAGE'};
 
-function mpSendData(data){ if(mpSocket&&mpSocket.connected) try{mpSocket.emit('game-data',data);}catch(e){} }
-
 function mpCleanup(){
-  if(mpSocket){try{mpSocket.removeAllListeners();mpSocket.disconnect();}catch(e){} mpSocket=null;}
-  mpGuestConnected=false;
+  if(mpRoomRef){mpRoomRef.off();mpRoomRef=null;}
+  if(mpInputInterval){clearInterval(mpInputInterval);mpInputInterval=null;}
+  mpGuestConnected=false;mpPendingActions=[];
 }
-
-function showMpMenu(){ initAudio(); playSound('menuClick'); document.getElementById('mpMenu').style.display='flex'; }
-function closeMpMenu(){ playSound('menuClick'); document.getElementById('mpMenu').style.display='none'; }
-
-const MP_SERVER=window.location.origin;
-
-function mpConnectSocket(statusEl){
-  return new Promise(function(resolve,reject){
-    let socket=io(MP_SERVER,{transports:['websocket','polling'],timeout:10000,reconnection:true,reconnectionAttempts:5,reconnectionDelay:1000});
-    mpSocket=socket;
-    socket.on('connect',function(){ resolve(socket); });
-    socket.on('connect_error',function(){
-      statusEl.style.color='#f44';
-      statusEl.innerHTML='Cannot reach server. <button class="mp-btn back-btn" style="display:inline;font-size:11px;padding:4px 12px;" onclick="'+(mpIsHost?'showCreateRoom()':'joinRoom()')+'()">RETRY</button>';
-      reject(new Error('connect_error'));
-    });
-    socket.on('disconnect',function(){
-      if(!mpGuestConnected){
-        statusEl.style.color='#f44';
-        statusEl.innerHTML='Disconnected from server. <button class="mp-btn back-btn" style="display:inline;font-size:11px;padding:4px 12px;" onclick="'+(mpIsHost?'showCreateRoom()':'joinRoom()')+'()">RETRY</button>';
-      }
-    });
-  });
-}
+function showMpMenu(){initAudio();playSound('menuClick');document.getElementById('mpMenu').style.display='flex';}
+function closeMpMenu(){playSound('menuClick');document.getElementById('mpMenu').style.display='none';}
+function mpGenCode(){const c='ABCDEFGHJKLMNPQRSTUVWXYZ23456789';let r='';for(let i=0;i<6;i++)r+=c[Math.floor(Math.random()*c.length)];return r;}
 
 function showCreateRoom(){
   playSound('menuClick');
   document.getElementById('mpMenu').style.display='none';
   document.getElementById('createRoomPanel').style.display='flex';
   document.getElementById('createStatus').style.color='#ff0';
-  document.getElementById('createStatus').textContent='Connecting to server...';
+  document.getElementById('createStatus').textContent='Creating room...';
   document.getElementById('createLobby').style.display='none';
   document.getElementById('roomCodeDisplay').textContent='------';
-  mpCleanup();
-  mpIsHost=true; mpMode=true;
+  mpCleanup();mpIsHost=true;mpMode=true;
   let statusEl=document.getElementById('createStatus');
-  mpConnectSocket(statusEl).then(function(socket){
-    socket.emit('create-room',function(res){
-      if(res.error){
-        statusEl.style.color='#f44';
-        statusEl.innerHTML=res.error+'. <button class="mp-btn back-btn" style="display:inline;font-size:11px;padding:4px 12px;" onclick="showCreateRoom()">RETRY</button>';
-        return;
-      }
-      document.getElementById('roomCodeDisplay').textContent=res.code;
-      statusEl.className='mp-ready';
-      statusEl.textContent='Room ready! Share code with friend.';
-    });
-    socket.on('guest-joined',function(){
+  let code=mpGenCode();
+  mpRoomRef=fdb.ref('rooms/'+code);
+  mpRoomRef.set({hostChar:null,guestChar:null,status:'lobby',created:Date.now()});
+  mpRoomRef.onDisconnect().remove();
+  document.getElementById('roomCodeDisplay').textContent=code;
+  statusEl.className='mp-ready';
+  statusEl.textContent='Room ready! Share code with friend.';
+  mpRoomRef.child('guestChar').on('value',function(snap){
+    if(snap.val()&&!mpGuestConnected){
       mpGuestConnected=true;
-      statusEl.className='mp-ready';
-      statusEl.textContent='Opponent connected!';
+      statusEl.textContent='Opponent joined!';
       document.getElementById('createLobby').style.display='block';
-    });
-    socket.on('game-data',function(data){ handleGuestData(data); });
-    socket.on('guest-disconnected',function(){
-      mpGuestConnected=false;
-      document.getElementById('guestHeroPick').textContent='Disconnected';
-      document.getElementById('mpStartBtn').disabled=true;
-      statusEl.style.color='#ff0';
-      statusEl.textContent='Opponent disconnected.';
-    });
-  }).catch(function(){});
+    }
+  });
 }
 
 function showJoinRoom(){
@@ -589,58 +559,103 @@ function showJoinRoom(){
 
 function joinRoom(){
   let code=document.getElementById('joinCodeInput').value.trim().toUpperCase();
-  if(!code||code.length<3){ document.getElementById('joinStatus').style.color='#f44'; document.getElementById('joinStatus').textContent='Enter a valid code'; return; }
+  if(!code||code.length<3){document.getElementById('joinStatus').style.color='#f44';document.getElementById('joinStatus').textContent='Enter a valid code';return;}
   document.getElementById('joinStatus').style.color='#ff0';
-  document.getElementById('joinStatus').textContent='Connecting to server...';
-  mpCleanup();
-  mpIsHost=false; mpMode=true;
+  document.getElementById('joinStatus').textContent='Searching for room...';
+  mpCleanup();mpIsHost=false;mpMode=true;
   let statusEl=document.getElementById('joinStatus');
-  mpConnectSocket(statusEl).then(function(socket){
-    socket.emit('join-room',code,function(res){
-      if(res.error){
-        statusEl.style.color='#f44';
-        statusEl.innerHTML=res.error+'. <button class="mp-btn back-btn" style="display:inline;font-size:11px;padding:4px 12px;" onclick="joinRoom()">RETRY</button>';
-        return;
-      }
-      mpGuestConnected=true;
-      statusEl.className='mp-ready';
-      statusEl.textContent='Connected to host!';
-      document.getElementById('joinLobby').style.display='block';
-    });
-    socket.on('game-data',function(data){ handleHostData(data); });
-    socket.on('host-disconnected',function(){
-      mpGuestConnected=false;
+  mpRoomRef=fdb.ref('rooms/'+code);
+  mpRoomRef.once('value',function(snap){
+    if(!snap.val()){
       statusEl.style.color='#f44';
-      statusEl.innerHTML='Host disconnected. <button class="mp-btn back-btn" style="display:inline;font-size:11px;padding:4px 12px;" onclick="joinRoom()">RETRY</button>';
-      document.getElementById('joinLobby').style.display='none';
+      statusEl.innerHTML='Room not found. <button class="mp-btn back-btn" style="display:inline;font-size:11px;padding:4px 12px;" onclick="joinRoom()">RETRY</button>';
+      mpRoomRef=null;return;
+    }
+    mpGuestConnected=true;
+    statusEl.className='mp-ready';
+    statusEl.textContent='Connected to host!';
+    document.getElementById('joinLobby').style.display='block';
+    mpRoomRef.child('status').on('value',function(snap2){
+      if(snap2.val()==='playing'){
+        mpRoomRef.child('hostChar').once('value',function(snap3){
+          mpHostChar=snap3.val()||'sniper';
+          mpRoomRef.child('guestChar').once('value',function(snap4){
+            mpGuestChar=snap4.val()||'archer';
+            startMpGameAsGuest();
+          });
+        });
+      }
     });
-  }).catch(function(){});
+  });
 }
 
 function mpPickHero(c,el){
-  initAudio(); playSound('menuSelect');
-  mpHostChar=c;
+  initAudio();playSound('menuSelect');mpHostChar=c;
   document.querySelectorAll('#hostHeroGrid .mp-hero-btn').forEach(b=>b.classList.remove('selected'));
-  if(el) el.classList.add('selected');
+  if(el)el.classList.add('selected');
   document.getElementById('hostHeroPick').textContent=HERO_NAMES[c]||c.toUpperCase();
   document.getElementById('hostHeroPick').style.color=CHAR_COLORS[c];
-  mpSendData({type:'hostPick',char:c});
+  if(mpRoomRef)mpRoomRef.child('hostChar').set(c);
   checkMpReady();
 }
 function mpPickGuestHero(c,el){
-  initAudio(); playSound('menuSelect');
-  mpGuestChar=c;
+  initAudio();playSound('menuSelect');mpGuestChar=c;
   document.querySelectorAll('#joinHeroGrid .mp-hero-btn').forEach(b=>b.classList.remove('selected'));
-  if(el) el.classList.add('selected');
+  if(el)el.classList.add('selected');
   document.getElementById('joinGuestHero').textContent=HERO_NAMES[c]||c.toUpperCase();
   document.getElementById('joinGuestHero').style.color=CHAR_COLORS[c];
-  mpSendData({type:'guestPick',char:c});
+  if(mpRoomRef)mpRoomRef.child('guestChar').set(c);
   checkMpReady();
 }
-function checkMpReady(){
-  if(mpIsHost){
-    document.getElementById('mpStartBtn').disabled=!(mpHostChar&&mpGuestChar&&mpGuestConnected);
-  }
+function checkMpReady(){if(mpIsHost){document.getElementById('mpStartBtn').disabled=!(mpHostChar&&mpGuestChar&&mpGuestConnected);}}
+
+function mpStartGame(){
+  if(!mpIsHost||!mpRoomRef)return;
+  mpRoomRef.child('status').set('playing');
+  document.getElementById('createRoomPanel').style.display='none';
+  document.getElementById('itemMenu').style.display='none';
+  document.getElementById('menu').style.display='none';
+  playerWins=0;aiWins=0;currentRound=1;
+  playerChar=mpHostChar;aiChar=mpGuestChar;difficulty='hard';
+  restartMp();
+  mpRoomRef.child('guestInput').on('value',function(snap){
+    let input=snap.val();
+    if(input&&p2&&!gameOver)applyRemoteInput(p2,input);
+  });
+}
+
+function startMpGameAsGuest(){
+  document.getElementById('joinRoomPanel').style.display='none';
+  document.getElementById('itemMenu').style.display='none';
+  document.getElementById('menu').style.display='none';
+  playerWins=0;aiWins=0;currentRound=1;
+  playerChar=mpGuestChar;aiChar=mpHostChar;difficulty='hard';
+  restartMp();
+  mpRoomRef.child('state').on('value',function(snap){
+    let state=snap.val();
+    if(state)applyRemoteState(state);
+  });
+  mpInputInterval=setInterval(function(){
+    if(mpRoomRef&&started&&!gameOver){
+      mpRoomRef.child('guestInput').set({keys:{w:!!keys['KeyW'],a:!!keys['KeyA'],s:!!keys['KeyS'],d:!!keys['KeyD']},mouseX:mouseX,mouseY:mouseY,actions:mpPendingActions.splice(0)});
+    }
+  },50);
+}
+
+function restartMp(){
+  gameOver=false;winner='';started=true;paused=false;
+  let p1Color=CHAR_COLORS[mpIsHost?mpHostChar:mpGuestChar];
+  let p2Color=CHAR_COLORS[mpIsHost?mpGuestChar:mpHostChar];
+  p1=new Player(150,p1Color,'You',mpIsHost?mpHostChar:mpGuestChar);
+  p2=new Player(1100,p2Color,'Opponent',mpIsHost?mpGuestChar:mpHostChar);
+  bullets=[];particles=[];floatingTexts=[];screenShake=0;
+}
+
+function mpSerializeState(){
+  return{p1:serializePlayer(p1),p2:serializePlayer(p2),
+    bullets:bullets.map(function(b){return{x:b.x,y:b.y,vx:b.vx,vy:b.vy,type:b.type,damage:b.damage,color:b.color,life:b.life,ricochetCount:b.ricochetCount||0,freezeDuration:b.freezeDuration,hasAghanim:b.hasAghanim,ownerId:b.owner===p1?'p1':'p2'};}),
+    floatingTexts:floatingTexts.map(function(ft){return{x:ft.x,y:ft.y,text:ft.text,color:ft.color,life:ft.life};}),
+    gameOver:gameOver,winner:winner,playerWins:playerWins,aiWins:aiWins,currentRound:currentRound,screenShake:screenShake};
 }
 
 function mpPickHero(c,el){
@@ -810,44 +825,6 @@ function mpStartGame(){
   startMpGameAsHost();
 }
 
-function startMpGameAsHost(){
-  document.getElementById('itemMenu').style.display='none';
-  document.getElementById('menu').style.display='none';
-  currentRound=1;
-  if(mpConn) mpConn.send({type:'gameStart',hostChar:mpHostChar,guestChar:mpGuestChar});
-  restartMp();
-}
-
-function startMpGameAsGuest(data){
-  document.getElementById('itemMenu').style.display='none';
-  document.getElementById('menu').style.display='none';
-  document.getElementById('joinRoomPanel').style.display='none';
-  mpMode=true; mpIsHost=false;
-  playerChar=data.guestChar; aiChar=data.hostChar;
-  difficulty='hard'; playerWins=0; aiWins=0; currentRound=1;
-  restartMp();
-}
-
-function restartMp(){
-  if(mpIsHost && (playerWins>=2 || aiWins>=2)){
-    gameOver=false; winner=''; started=false; paused=false;
-    playerWins=0; aiWins=0; currentRound=1;
-    screenShake=0; bullets=[]; particles=[]; floatingTexts=[];
-    mpConn.send({type:'state',p1:serializePlayer(p1||{x:0,y:0,hp:200,maxHp:200,shield:0,ammo:10,reloading:false,frozen:false,stunned:false,disarmed:false,transparent:false,bkbActive:false,facing:1,onGround:true,isCasting:false,castTimer:0,hookActive:false,hookProgress:0,hitFlash:0,charType:mpHostChar,cooldown1:0,cooldown2:0,cooldown4:0,hookCooldown:0,chronoShiftCD:0,skyFlyCD:0,skyHomingCD:0,hasAbyssal:false,abyssalCD:0,hasBKB:false,bkbCD:0,hasHeaven:false,heavenCD:0,shieldCD:0,shieldUses:0,morphMode:'',morphTimer:0,skyFlying:false,skyFlyTimer:0,skyHoming:false,skyHomingTimer:0,chronoTimeStop:false,chronoTimeStopTimer:0,pinned:false,pinnedTimer:0,shadowStrikeTicks:0,healBlocked:0,aghanimDoDTicks:0,animIdle:0,animWalk:0,animJump:0,animShoot:0}),
-      p2:serializePlayer(p2||{x:1100,y:620,hp:200,maxHp:200,shield:0,ammo:10,reloading:false,frozen:false,stunned:false,disarmed:false,transparent:false,bkbActive:false,facing:-1,onGround:true,isCasting:false,castTimer:0,hookActive:false,hookProgress:0,hitFlash:0,charType:mpGuestChar,cooldown1:0,cooldown2:0,cooldown4:0,hookCooldown:0,chronoShiftCD:0,skyFlyCD:0,skyHomingCD:0,hasAbyssal:false,abyssalCD:0,hasBKB:false,bkbCD:0,hasHeaven:false,heavenCD:0,shieldCD:0,shieldUses:0,morphMode:'',morphTimer:0,skyFlying:false,skyFlyTimer:0,skyHoming:false,skyHomingTimer:0,chronoTimeStop:false,chronoTimeStopTimer:0,pinned:false,pinnedTimer:0,shadowStrikeTicks:0,healBlocked:0,aghanimDoDTicks:0,animIdle:0,animWalk:0,animJump:0,animShoot:0}),
-      bullets:[],floatingTexts:[],gameOver:false,winner:'',playerWins:playerWins,aiWins:aiWins,currentRound:currentRound,screenShake:0});
-    returnToMpMenu();
-    return;
-  }
-  currentRound++;
-  gameOver=false; winner=''; started=true; paused=false;
-  let p1Color=CHAR_COLORS[mpHostChar];
-  let p2Color=CHAR_COLORS[mpGuestChar];
-  p1=new Player(150,p1Color,'You',mpHostChar);
-  p2=new Player(1100,p2Color,'Opponent',mpGuestChar);
-  bullets=[]; particles=[]; floatingTexts=[]; screenShake=0;
-}
-
 function serializePlayer(p){
   return {
     x:p.x,y:p.y,hp:p.hp,maxHp:p.maxHp,shield:p.shield,ammo:p.ammo,reloading:p.reloading,
@@ -878,26 +855,9 @@ function closeMpLobby(){
   document.getElementById('createRoomPanel').style.display='none';
   document.getElementById('joinRoomPanel').style.display='none';
   document.getElementById('mpMenu').style.display='none';
-  if(mpPeer){ mpPeer.destroy(); mpPeer=null; }
-  mpConn=null; mpMode=false; mpIsHost=false; mpGuestConnected=false;
+  mpCleanup();
+  mpMode=false; mpIsHost=false;
   mpHostChar=null; mpGuestChar=null;
-}
-
-let mpInputInterval=null;
-function startMpInputLoop(){
-  if(mpInputInterval) clearInterval(mpInputInterval);
-  mpInputInterval=setInterval(function(){
-    if(!mpMode||mpIsHost||!mpConn||!started||gameOver) return;
-    let ik={};
-    if(keys['KeyW']) ik.w=true;
-    if(keys['KeyA']) ik.a=true;
-    if(keys['KeyS']) ik.s=true;
-    if(keys['KeyD']) ik.d=true;
-    let acts=[];
-    let now=Date.now();
-    if(mpSentInputs._lastShoot&&now-mpSentInputs._lastShoot<100){}
-    mpConn.send({type:'input',keys:ik,mouseX:mouseX,mouseY:mouseY,actions:acts});
-  },33);
 }
 
 const AI_DIFFICULTY={
@@ -920,13 +880,11 @@ document.addEventListener('keydown',e=>{
     return;
   }
   if(paused) return;
-  if(mpMode && !mpIsHost && mpConn && started && !gameOver){
-    let acts=[];
-    if(e.code==='ShiftLeft'||e.code==='ShiftRight'){ e.preventDefault(); acts.push('shift'); }
-    if(e.code==='Space'){ e.preventDefault(); acts.push('phantom'); }
-    if(e.code==='KeyE') acts.push('activeE');
-    if(e.code==='KeyF') acts.push('shield');
-    if(acts.length>0) mpConn.send({type:'input',keys:{},mouseX:mouseX,mouseY:mouseY,actions:acts});
+  if(mpMode && !mpIsHost && mpRoomRef && started && !gameOver){
+    if(e.code==='ShiftLeft'||e.code==='ShiftRight'){e.preventDefault();mpPendingActions.push('shift');}
+    if(e.code==='Space'){e.preventDefault();mpPendingActions.push('phantom');}
+    if(e.code==='KeyE')mpPendingActions.push('activeE');
+    if(e.code==='KeyF')mpPendingActions.push('shield');
     return;
   }
   if((e.code==='ShiftLeft'||e.code==='ShiftRight')&&started&&!gameOver&&p1){
@@ -965,12 +923,10 @@ canvas.addEventListener('mousedown',e=>{
     if(mx>=tx+15&&mx<=tx+27&&my>=ty+52&&my<=ty+64){ tutWalking=!tutWalking; return; }
     if(mx>=tx+15&&mx<=tx+27&&my>=ty+74&&my<=ty+86){ tutAbility=!tutAbility; return; }
   }
-  if(mpMode&&!mpIsHost&&mpConn&&started&&!gameOver){
+  if(mpMode&&!mpIsHost&&mpRoomRef&&started&&!gameOver){
     e.preventDefault();
-    let acts=[];
-    if(e.button===0) acts.push('shoot');
-    else if(e.button===2) acts.push('ability2');
-    if(acts.length>0) mpConn.send({type:'input',keys:{},mouseX:mouseX,mouseY:mouseY,actions:acts});
+    if(e.button===0) mpPendingActions.push('shoot');
+    else if(e.button===2) mpPendingActions.push('ability2');
     return;
   }
   if(!started||gameOver||paused||!p1) return;
@@ -2067,6 +2023,7 @@ function drawBackground(){
 
 function update(){
   if(!started||gameOver||paused) return;
+  if(mpMode&&!mpIsHost) return;
   if(mpMode && !mpIsHost){ return; }
 
   if(p1.hookActive&&p1.hookTarget){ let t=p1.hookTarget; p1.hookProgress+=0.025*GAME_SPEED; if(p1.hookProgress>=1&&!p1.hookPunchDone){ t.x=p1.x+p1.facing*40; t.stunned=true; t.stunnedTimer=180; spawnParticles(t.x,t.y-30,'#f80',25,10); floatingTexts.push(new FloatingText(t.x,t.y-80,'HOOKED! STUNNED 3s','#f80')); playSound('hookHit'); screenShake=8; p1.hookPunchDone=true; setTimeout(()=>{p1.hookActive=false;p1.hookTarget=null;},400); } }
@@ -2224,12 +2181,8 @@ function update(){
   for(let i=floatingTexts.length-1;i>=0;i--){ let ft=floatingTexts[i]; ft.y-=1; ft.life--; if(ft.life<=0) floatingTexts.splice(i,1); }
   if(screenShake>0) screenShake-=0.5;
 
-  if(mpMode && mpIsHost && mpConn){
-    let bd=[];
-    bullets.forEach(function(b){ bd.push({x:b.x,y:b.y,vx:b.vx,vy:b.vy,type:b.type,damage:b.damage,color:b.color,life:b.life,ricochetCount:b.ricochetCount,freezeDuration:b.freezeDuration,hasAghanim:b.hasAghanim,ownerId:b.owner===p1?'p1':'p2'}); });
-    let ftd=[];
-    floatingTexts.forEach(function(ft){ ftd.push({x:ft.x,y:ft.y,text:ft.text,color:ft.color,life:ft.life}); });
-    mpConn.send({type:'state',p1:serializePlayer(p1),p2:serializePlayer(p2),bullets:bd,floatingTexts:ftd,gameOver:gameOver,winner:winner,playerWins:playerWins,aiWins:aiWins,currentRound:currentRound,screenShake:screenShake});
+  if(mpMode&&mpIsHost&&mpRoomRef&&started&&!gameOver){
+    mpRoomRef.child('state').set(mpSerializeState());
   }
 }
 
